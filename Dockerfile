@@ -4,11 +4,10 @@ RUN apt-get update \
     && apt-get install -y curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ./pyproject.toml ./
-COPY ./README.md ./
+COPY ./requirements.txt ./
 COPY ./app /app
 
-RUN pip install .
+RUN pip install -r requirements.txt
 
 WORKDIR /app
 

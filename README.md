@@ -1,105 +1,302 @@
-# FastAPIStarter
+# FastStarter
 
-A FastAPI template for info2602 students based on the [fullstack fastapi template](https://github.com/fastapi/full-stack-fastapi-template) with a few modifications to make it a layered architecture that combines the best of MVC and service repository pattern. This codebase is structured to reduce the repeatibility of code [(the DRY principle)](https://en.wikipedia.org/wiki/Don%27t_repeat_yourself) as it was demonstrated in class that code is usually repeated when implementing functionality for a CLI app, a headless API, and a fullstack app. When writing software at scale, deduplicating code is important as it makes the codebase easier to maintain, test and scale.
+FastStarter is a small FastAPI web application with server-rendered pages, authentication, SQLModel persistence, and a warm ink, coral, and sea-glass visual theme.
 
-Additionally, this codebase follows an API-first, modern AJAX flow (similar to Lab 8). In essence, this can be summarized as follows. 
+## Features
 
-1. If we want to have this backend web application render the UI as well, we can implement our **VIEWS** that return our user interface.
-2. A small javascript script (`utils.js`) intercepts default form submissions and instead sends an appropriate endpoint to our **api** endpoints
+- Public landing page, registration, login, logout, and health-check routes
+- JWT authentication stored in HTTP-only cookies
+- SQLite for local development and PostgreSQL for deployment
+- Separate regular-user and admin areas
+- Responsive HTML templates with shared static CSS and JavaScript
+- Unit and integration tests with pytest
 
-The main advantage of this application structure are plenty:
-1. We don't have to implement a jinja based frontend for the application. We can simply implement api endpoints like we did in labs 1-4 
-2. We can implement a backend API for a mobile / desktop application (where the view logic resides in java/kotlin/flutter etc)
-3. We can implement a backend API that uses a separate frontend like Vue, React, Next, Nuxt etc.
-4. We can export the list of endpoints and have other services (like AI agents) consume them 
-5. We can implement an app that functions purely from the CLI
+## Setup
 
+Requirements: Python 3.10 or newer.
 
-## What is the Model View Controller (MVC) pattern?
+Create a virtual environment and install the pinned dependencies:
 
-The MVC pattern is a code pattern that is used to organise the modules of a project and when applied to a project, it usually works as follows:
+```bash
+python -m venv .venv
+```
 
-- **Models** are your SQLModel/SQLAlchemy classes (The classes that become database tables)
-- **Controllers** are utility functions used to mutate models and/or perform business logic
-- **Views** bind controllers to http routes passing along any user parameters from the request to the controller
+Windows PowerShell:
 
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-## What is the Service repository pattern?
+macOS or Linux:
 
-The Service Repository pattern is designed to keep business logic separate from the data access and it aims to separate the codebase into distinct layers.
+```bash
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-- **The Repository Layer** acts as a mediator between the application and the data source (the database, files, etc)
-- **The Service Layer** sits between the controller and the repository and this is where business logic lives.
+All Python dependencies are managed directly in `requirements.txt`.
 
+## Configuration
 
-The job of the **repository layer** is to handle ***CRUD*** operations on a model. It doesn't care about the rules at the business logic layer, it's only concerned about how to get and manipulate data. 
+Copy the example environment file:
 
-The job of the **service layer** is to handle the **RULES** of the application. This is where the business logic comes in such as checking to see if a user's authorized to access the data.
+```powershell
+Copy-Item .env.example .env
+```
 
-## App Structure
+On macOS or Linux:
 
-This app is structuresd as follows
+```bash
+cp .env.example .env
+```
 
-<pre>
-FastAPIStarter
-|-- app
-|    |- api
-|    |- dependencies
-|    |- models
-|    |- repositories
-|    |- schemas
-|    |- services
-|    |- static
-|    |- templates
-|    |- utilities
-|    |- views
-|-- tests/
-|-- env.example
-|-- pyptoject.toml
+The default configuration uses a local SQLite database. Set `SECRET_KEY` before deployment. `CONFIG_PASSWORD` enables the optional configuration page.
+
+## Run locally
+
+Initialize the database and seed demo users:
+
+```bash
+python manage.py init
+```
+
+Demo accounts:
+
+| Username | Password | Role |
+| --- | --- | --- |
+| `bob` | `bobpass` | regular_user |
+| `admin` | `adminpass` | admin |
+
+Start the development server:
+
+```bash
+python manage.py run
+```
+
+Open [http://127.0.0.1:5000](http://127.0.0.1:5000) in a browser.
+
+Useful commands:
+
+```bash
+python manage.py init --no-drop
+python manage.py init --no-seed
+python manage.py seed
+python manage.py users
+python manage.py run --host 127.0.0.1 --port 5000
+python manage.py run --no-reload
+```
+
+## Tests
+
+Run the unit and integration tests with:
+
+```bash
+python -m pytest tests -q
+```
+
+The tests cover password hashing, authentication services, JWT claims, and service/repository behavior against an isolated SQLite database.
+
+## Application components
+
+The application is organized into components with focused responsibilities. A component should only handle the work appropriate to its layer and pass the result to the next layer.
+
+<img src="app/static/img/architecture.svg" alt="FastStarter application architecture" width="100%">
+
+This diagram shows how requests move from routes through dependencies, schemas, services, repositories, and models before reaching the database. The source image is available at [`app/static/img/architecture.svg`](app/static/img/architecture.svg).
+
+### Routes
+
+Routes are the HTTP entry points in `app/routers/`. They receive requests, read form or path/query parameters, obtain dependencies, and return HTML responses, redirects, or JSON responses.
+
+Use a route when adding a new URL or changing how HTTP requests and responses are handled. Routes should stay thin: they should coordinate the request rather than contain database queries or substantial business rules.
+
+Example: `app/routers/register.py` exposes:
+
+```python
+@router.post("/register")
+def signup_user(request: Request, db: SessionDep, username: str = Form(), ...):
+		user_repo = UserRepository(db)
+		auth_service = AuthService(user_repo)
+		return auth_service.register_user(username, email, password)
+```
+
+The route receives the form, creates the required dependencies, calls the service, and redirects the user. It does not directly insert a `User` row.
+
+### Dependencies
+
+Dependencies provide shared resources to routes and services. `SessionDep` in `app/dependencies/session.py` supplies a SQLModel database session through FastAPI dependency injection.
+
+Use a dependency when multiple routes need the same request-scoped resource, such as a database session, authenticated user, or permission check.
+
+```python
+SessionDep = Annotated[Session, Depends(get_session)]
+```
+
+This keeps session creation and cleanup in one place instead of repeating it in every route.
+
+### Schemas
+
+Schemas define validated data shapes at application boundaries. They are in `app/schemas/` and describe what data may enter or leave a component.
+
+Use a schema when validating request data, defining a service input, or controlling the fields returned to a client. Schemas help prevent database-only fields such as password hashes from leaking in responses.
+
+Examples:
+
+- `RegularUserCreate` describes a regular user to be created and supplies the `regular_user` role.
+- `AdminCreate` describes an admin user to be created.
+- `UserResponse` limits API output to `id`, `username`, and `email`.
+- `UserUpdate` describes editable username and email fields.
+
+```python
+class UserResponse(SQLModel):
+		id: int
+		username: str
+		email: EmailStr
+```
+
+### Services
+
+Services contain application rules and coordinate repositories. They are in `app/services/`.
+
+Use a service when an operation involves business behavior, security, validation, multiple repository calls, or a meaningful workflow. Services should not know how SQL queries are written.
+
+`AuthService` is responsible for registration and login. It hashes passwords during registration, verifies passwords during login, and creates access tokens after successful authentication. `UserService` coordinates user-related operations such as retrieving users.
+
+```python
+auth_service = AuthService(user_repository)
+user = auth_service.register_user("alice", "alice@example.com", "secret")
+token = auth_service.authenticate_user("alice", "secret")
+```
+
+### Repositories
+
+Repositories contain persistence operations. They are in `app/repositories/` and receive a database session.
+
+Use a repository when reading or changing database records. A repository should handle queries, inserts, updates, deletes, commits, refreshes, and rollbacks, but should not decide application policy such as how passwords are verified.
+
+`UserRepository` provides operations such as:
+
+```python
+repository.create(user_data)
+repository.get_by_username("alice")
+repository.get_all_users()
+repository.update_user(user_id, user_update)
+repository.delete_user(user_id)
+```
+
+### Models
+
+Models represent database tables and are in `app/models/`. The `User` model is a SQLModel table with `id`, `username`, `email`, `password`, and `role` fields.
+
+Use a model when defining the structure persisted in the database, including primary keys, indexes, uniqueness, and relationships. Models are not the place for login workflows or route formatting.
+
+```python
+class User(UserBase, table=True):
+		id: Optional[int] = Field(default=None, primary_key=True)
+```
+
+### Example workflow: register a user
+
+When a visitor submits the registration form, the components work together in this order:
+
+```text
+POST /register
+	-> route reads username, email, and password form fields
+	-> SessionDep provides a database session
+	-> AuthService hashes the password and creates RegularUserCreate
+	-> UserRepository creates and commits a User model
+	-> database stores the new row
+	-> route redirects to /login
+```
+
+The important boundaries are:
+
+1. The **route** handles HTTP input and the redirect.
+2. The **service** applies the registration rule and hashes the password.
+3. The **schema** describes the new regular user data.
+4. The **repository** persists the data.
+5. The **model** maps the data to the `user` database table.
+
+### Example workflow: list users through the JSON API
+
+For `GET /api/users`, the flow is:
+
+```text
+GET /api/users
+	-> route receives SessionDep
+	-> UserRepository queries the User table
+	-> UserService coordinates get_all_users()
+	-> UserResponse filters the returned fields
+	-> FastAPI serializes the list as JSON
+```
+
+This route returns public user fields only. Password hashes remain on the database model and are not included in `UserResponse`.
+
+## Postman collection
+
+Import [`postman/FastStarter.postman_collection.json`](postman/FastStarter.postman_collection.json) into Postman to test the health check and users API. The collection defaults to `http://127.0.0.1:5000`; change its `baseUrl` variable for another environment.
+
+## Deployment
+
+The repository includes `render.yaml` for deploying the web service and PostgreSQL database on Render.
+
+The web service uses:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `python manage.py init --no-drop && python manage.py run --host 0.0.0.0 --port $PORT`
+- `DATABASE_URI`: PostgreSQL connection string
+- `SECRET_KEY`: production signing key
+- `ENV`: `production`
+
+The Docker image also installs dependencies directly from `requirements.txt`.
+
+## Project structure
+
+<img src="structure.png" alt="FastStarter project structure" width="100%">
+
+```text
+faststart
 |-- README.md
-</pre>
+|-- manage.py
+|-- requirements.txt
+|-- Dockerfile
+|-- render.yaml
+|-- .env.example
+|-- tests/
+|   |-- test_unit.py
+|   |-- test_integration.py
+|-- app/
+|   |-- cli.py
+|   |-- config.py
+|   |-- database.py
+|   |-- main.py
+|   |-- models/
+|   |-- repositories/
+|   |-- routers/
+|   |-- schemas/
+|   |-- services/
+|   |-- static/
+|   |-- templates/
+|   |-- utilities/
+```
 
-#### App Structure info
+## COMP3605 Tutorial 4 — Game Rental API
 
-##### Main folders
-`app` This folder contains all of our application code.
+The game-rental endpoints are registered under `/api` (the starter project's API prefix):
 
-`tests` This contains the tests (unit tests, integration tests, etc) for the application.
+- `POST /api/signup` — create a customer account.
+- `POST /api/auth` — log in and receive a bearer token.
+- `POST /api/games` — staff creates a catalogue game.
+- `POST /api/listings` — authenticated user lists a game for rent/sale.
+- `GET /api/listings?platform=PS5` — browse available listings; platforms are `NSW`, `PS5`, `XBOX`, and `PC`.
+- `POST /api/payment` — staff records a payment.
+- `POST /api/rentals` — staff starts a rental and marks its listing as rented.
+- `PUT /api/rentals/{rental_id}` — staff returns a rental and makes its listing available again.
+- `POST /api/listings/{listing_id}/sell` — a listing owner marks their available listing as sold.
 
-##### Folders inside App
-`api` This folder contains the endpoints (route fucntions) of our app.
+For protected API calls, send the token returned by `/api/auth` in the HTTP header `Authorization: Bearer <access_token>`. The existing browser login cookie is also accepted.
 
-`dependencies` This folder contains the functions that we'd usually use for dependency injection e.g. getting the information of the user who's performing the request, getting a reference to the database, etc
-
-`models` This folder contains the Pydantic / SQLModel / SQLAlchemy models that eventually become database tables. Note that the files in here are strictly those that become database tables. The other models used for request and response validation go in the `schemas` folder
-
-`repositories` files in this folder are used to query the datastore, which depending on the app can be a file, database, another api, etc. Usually though, it's our database.
-
-`services` The business logic of the application lives here.
-
-`schemas` files in this folder specify pydantic / sqlmodel classes that are used for data validation only and *NOT* models that become database tables.
-
-`utilities` This contain generic helper functions
-
-`static` this contains folders that contain css, js, img and other assets we may need when this app is responsible for rendering of the frontend UI>
-
-`templates` this contains our jinja2 templates
-
-`views` this contains the route functions used for when this app is responsible for rendering the frontnend UI
-
-> Note that the file env.example provides a default set of configuration values for this application. you **MUST** create a copy of this file named `.env` before launching the app. The preconfigured environment allows a user to have an app that uses a sqlite database for a datastore as well as some other default configurations. The values in this should ideally be modified for production. For more possible variables, check out the `config.py` file
-
-
-## Using this in production
-
-
-If you so ever choose to use this template for your own projects, please consider the following:
-
-1. You **WILL** need to modify the default configuration to 
-    - Use a database that's more suitable for production. 
-    - Change the default secret
-    - Change the default environment
-2. You may need to tweak additional settings in the `config.py` file for scalability
-3. You'd need to look into a database migration / upgrade tool like alembic
-4. You may want to dockerize the application for easier deployment
-5. You may want to switch from storing cookies in localstorage to only cookies depending on your security needs.
+Run the test suite from the project root with `python -m pytest tests -q`.
