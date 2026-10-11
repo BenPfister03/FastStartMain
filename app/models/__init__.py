@@ -1,6 +1,8 @@
-from .user import User
-from .game import Game
-from .listing import Listing, Availability
-from .rental import Rental
-from .payment import Payment
-from .customer import Customer
+"""Database table models; import all models so SQLModel registers them."""
+from app.models.user import User
+from app.models.game import Game
+from app.models.listing import Listing
+from app.models.payment import Payment
+from app.models.rental import Rental
+
+__all__ = ["User", "Game", "Listing", "Payment", "Rental"]

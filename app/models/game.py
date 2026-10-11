@@ -1,16 +1,10 @@
-from typing import TYPE_CHECKING, List, Optional
-
-from sqlmodel import Field, Relationship, SQLModel
-
-if TYPE_CHECKING:
-    from app.models.listing import Listing
+from typing import Optional
+from sqlmodel import Field, SQLModel
 
 
 class Game(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    title: str
-
-    listings: List["Listing"] = Relationship(back_populates="game")
-
-    def __str__(self) -> str:
-        return f"(Game id={self.id}, title={self.title})"
+    title: str = Field(index=True)
+    platform: str = Field(index=True)
+    genre: str = ""
+    release_year: Optional[int] = None

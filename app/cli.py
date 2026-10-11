@@ -1,152 +1,292 @@
-from typing import Annotated
+#!/usr/bin/env python3
+"""FastStarter project CLI — stdlib argparse (no extra CLI library).
 
-import typer
-from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
+From the project root (venv active, deps installed; ``.env`` optional — falls back to ``.env.example``):
 
-from app.database import create_db_and_tables, drop_all, get_cli_session
-from app.models import Availability, Game, Listing, Rental
-from app.services.customer_service import DEPOSIT, CustomerService
+    python manage.py init
+    python manage.py run
+    python manage.py users
+    python manage.py report --name "Student Name" --id "816000000"
+    python manage.py usecase
+    python manage.py skills-verify
+"""
 
-cli = typer.Typer(help="Peer-to-peer game rental CLI")
+from __future__ import annotations
 
-Username = Annotated[str, typer.Argument(help="Your username")]
-Password = Annotated[str, typer.Argument(help="Your password")]
-
-
-def _login(db, username: str, password: str):
-    customer = CustomerService(db).authenticate(username, password)
-    if not customer:
-        print("Invalid username or password.")
-        raise typer.Exit(1)
-    return customer
+import argparse
+import sys
+from pathlib import Path
 
 
-@cli.command()
-def initialize():
-    """Drop and recreate all tables, then add a few sample games."""
-    with get_cli_session() as db:
-        drop_all()
-        create_db_and_tables()
-        for title in ["Zelda: Breath of the Wild", "Mario Kart 8", "FIFA 24"]:
-            db.add(Game(title=title))
-        db.commit()
-        print("Database Initialized")
+def _ensure_models_loaded() -> None:
+    import app.models  # noqa: F401
 
 
-@cli.command()
-def register(
-    username: Annotated[str, typer.Argument(help="Unique username")],
-    email: Annotated[str, typer.Argument(help="Unique email address")],
-    password: Annotated[str, typer.Argument(help="Account password")],
-):
-    """Join the store as a customer (records the joining deposit)."""
-    with get_cli_session() as db:
+def cmd_init(args: argparse.Namespace) -> None:
+    """Create database tables (drops existing by default) and seed demo users."""
+    from app.config import get_settings
+    from app.database import drop_all, ensure_db_and_tables
+
+    _ensure_models_loaded()
+    if args.drop:
+        print("Dropping all tables…")
+        # Drop can fail on a brand-new empty DB; create path still retries.
         try:
-            customer = CustomerService(db).register(username, email, password)
-        except IntegrityError:
-            db.rollback()
-            print("Username or email already taken!")
-            raise typer.Exit(1)
-        print(f"Welcome {customer.username}! Deposit of {DEPOSIT:.2f} recorded.")
+            drop_all()
+        except Exception as exc:  # noqa: BLE001
+            from app.database import is_db_not_ready_error
+
+            if not is_db_not_ready_error(exc):
+                raise
+            print(f"Database not ready yet while dropping ({exc}); continuing…")
+    print("Creating tables…")
+    ensure_db_and_tables()
+    print(f"Database ready ({get_settings().database_uri}).")
+    if getattr(args, "seed", True):
+        cmd_seed(args)
 
 
-@cli.command()
-def add_game(title: Annotated[str, typer.Argument(help="Title of the game")]):
-    """Add a game title to the catalogue."""
-    with get_cli_session() as db:
-        game = Game(title=title)
-        db.add(game)
-        db.commit()
-        db.refresh(game)
-        print(f"Added {game}")
+def cmd_seed(args: argparse.Namespace) -> None:
+    """Insert demo users.
+
+    bob / bobpass       (regular_user)
+    admin / adminpass   (admin)
+    """
+    from app.database import ensure_db_and_tables, get_cli_session
+    from app.repositories.user import UserRepository
+    from app.schemas.user import AdminCreate, RegularUserCreate
+    from app.utilities.security import encrypt_password
+
+    _ensure_models_loaded()
+    ensure_db_and_tables()
+
+    demo_users = [
+        ("bob", "bob@example.com", "bobpass", "regular_user"),
+        ("admin", "admin@example.com", "adminpass", "admin"),
+    ]
+
+    created = 0
+    skipped = 0
+    with get_cli_session() as session:
+        repo = UserRepository(session)
+        for username, email, password, role in demo_users:
+            if repo.get_by_username(username):
+                print(f"  skip  {username} (already exists)")
+                skipped += 1
+                continue
+            payload_cls = AdminCreate if role == "admin" else RegularUserCreate
+            repo.create(
+                payload_cls(
+                    username=username,
+                    email=email,
+                    password=encrypt_password(password),
+                    role=role,
+                )
+            )
+            print(f"  create {username} ({role})")
+            created += 1
+
+    print(f"Seed done — created {created}, skipped {skipped}.")
+    print("Login with bob/bobpass or admin/adminpass")
 
 
-@cli.command()
-def catalogue():
-    """View the game catalogue with every currently available listing."""
-    with get_cli_session() as db:
-        for game in db.exec(select(Game)).all():
-            print(f"[{game.id}] {game.title}")
-            for listing in game.listings:
-                if listing.availability == Availability.AVAILABLE:
-                    print(f"    listing #{listing.id}: {listing.condition}, "
-                          f"{listing.price:.2f}, owner {listing.owner.username}")
+def cmd_run(args: argparse.Namespace) -> None:
+    """Start the FastAPI app with Uvicorn."""
+    import uvicorn
+
+    from app.config import get_settings
+
+    settings = get_settings()
+    bind_host = args.host or settings.app_host
+    bind_port = args.port or settings.app_port
+    if args.reload is None:
+        use_reload = settings.env.lower() != "production"
+    else:
+        use_reload = args.reload
+    browser_host = "127.0.0.1" if bind_host in {"0.0.0.0", "::"} else bind_host
+    print(f"Starting FastStarter on http://{browser_host}:{bind_port} (reload={use_reload})")
+    uvicorn.run(
+        "app.main:app",
+        host=bind_host,
+        port=bind_port,
+        reload=use_reload,
+    )
 
 
-@cli.command()
-def list_game(
-    username: Username,
-    password: Password,
-    game_id: Annotated[int, typer.Argument(help="ID of the game you are listing")],
-    condition: Annotated[str, typer.Argument(help="Condition of your copy, e.g. Good")],
-    price: Annotated[float, typer.Argument(help="Rental price")],
-):
-    """List a copy of a game you own for rental."""
-    with get_cli_session() as db:
-        customer = _login(db, username, password)
-        game = db.get(Game, game_id)
-        if not game:
-            print(f"Game {game_id} not found!")
-            raise typer.Exit(1)
-        print(f"Listed: {customer.list_game(game, condition, price)}")
+def cmd_report(args: argparse.Namespace) -> None:
+    """Export docs/report.md to PDF; merges judge + exports Guide transcripts."""
+    from app.report_pdf import export_report
+    from app.skill_integrity import format_report, verify
+
+    export_report(
+        name=args.name,
+        student_id=args.student_id,
+        source=None if args.src is None else Path(args.src),
+        output=None if args.output is None else Path(args.output),
+    )
+    print(format_report(verify()))
 
 
-@cli.command()
-def rent(
-    username: Username,
-    password: Password,
-    listing_id: Annotated[int, typer.Argument(help="ID of the listing to rent")],
-):
-    """Rent an available listing."""
-    with get_cli_session() as db:
-        customer = _login(db, username, password)
-        listing = db.get(Listing, listing_id)
-        if not listing:
-            print(f"Listing {listing_id} not found!")
-            raise typer.Exit(1)
-        try:
-            rental = customer.rent_game(listing)
-        except ValueError as e:
-            print(e)
-            raise typer.Exit(1)
-        print(f"Rented: {rental}")
+def cmd_transcripts(args: argparse.Namespace) -> None:
+    """Dump all native Guide project transcripts into docs/transcripts/ for submission."""
+    from app.transcript_export import export_project_transcripts
+
+    result = export_project_transcripts(make_zip=not args.no_zip)
+    if result.found == 0:
+        print(
+            "Warning: no Guide transcripts found. "
+            "Set FASTSTARTER_TRANSCRIPTS_DIR if chats live outside Cursor's agent-transcripts folder."
+        )
+        raise SystemExit(2)
+    print(f"Submission dump ready: {result.out_dir}")
+    if result.zip_path:
+        print(f"Zip for submission: {result.zip_path}")
 
 
-@cli.command()
-def my_rentals(username: Username, password: Password):
-    """Show your rentals and the amount due on each unreturned one."""
-    from datetime import date
-    with get_cli_session() as db:
-        customer = _login(db, username, password)
-        if not customer.rentals:
-            print("No rentals found")
-        for rental in customer.rentals:
-            due = "" if rental.return_date else f" - due {rental.amount_due(date.today()):.2f}"
-            print(f"{rental}{due}")
+def cmd_skills_verify(args: argparse.Namespace) -> None:
+    """Check course skill files against .agents/skills.lock.json."""
+    from app.skill_integrity import format_report, verify
+
+    result = verify()
+    print(format_report(result))
+    if not result.ok:
+        raise SystemExit(1)
 
 
-@cli.command()
-def return_game(
-    username: Username,
-    password: Password,
-    rental_id: Annotated[int, typer.Argument(help="ID of the rental being returned")],
-    amount: Annotated[float, typer.Argument(help="Payment (listing price plus any late fee)")],
-):
-    """Return a rented game with payment."""
-    with get_cli_session() as db:
-        customer = _login(db, username, password)
-        rental = db.get(Rental, rental_id)
-        if not rental:
-            print(f"Rental {rental_id} not found!")
-            raise typer.Exit(1)
-        try:
-            payment = customer.return_game(rental, amount)
-        except ValueError as e:
-            print(e)
-            raise typer.Exit(1)
-        print(f"Returned. {payment}")
+def cmd_usecase(args: argparse.Namespace) -> None:
+    """Render docs/diagrams/use-case.json to a UML use-case PNG."""
+    from app.usecase_diagram import render_usecase_png
+
+    dest = render_usecase_png(
+        spec_path=None if args.spec is None else Path(args.spec),
+        output=None if args.output is None else Path(args.output),
+    )
+    print(f"Wrote {dest}")
+
+
+def cmd_skills_lock(args: argparse.Namespace) -> None:
+    """Rewrite the skill lockfile (course authors only)."""
+    from app.skill_integrity import write_lock
+
+    dest = write_lock()
+    print(f"Wrote {dest}")
+
+
+def cmd_users(args: argparse.Namespace) -> None:
+    """List users currently in the database."""
+    from sqlmodel import select
+
+    from app.database import get_cli_session
+    from app.models.user import User
+
+    _ensure_models_loaded()
+    with get_cli_session() as session:
+        users = session.exec(select(User)).all()
+        if not users:
+            print("No users found. Run: python manage.py init")
+            return
+        for user in users:
+            print(
+                f"  id={user.id}  username={user.username}  "
+                f"role={user.role}  email={user.email}"
+            )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python manage.py",
+        description="FastStarter Python CLI — init database, seed demo data, run the app.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_init = sub.add_parser(
+        "init",
+        help="Create DB tables and seed demo users (drops existing tables by default)",
+    )
+    p_init.add_argument(
+        "--no-drop",
+        dest="drop",
+        action="store_false",
+        help="Create tables without dropping existing ones",
+    )
+    p_init.add_argument(
+        "--no-seed",
+        dest="seed",
+        action="store_false",
+        help="Skip demo user seed after creating tables",
+    )
+    p_init.set_defaults(drop=True, seed=True, func=cmd_init)
+
+    p_seed = sub.add_parser(
+        "seed",
+        help="Insert demo users only (idempotent; also runs as part of init)",
+    )
+    p_seed.set_defaults(func=cmd_seed)
+
+    p_run = sub.add_parser("run", help="Start the web app (uvicorn)")
+    p_run.add_argument("--host", default=None, help="Bind host")
+    p_run.add_argument("--port", type=int, default=None, help="Bind port")
+    reload_group = p_run.add_mutually_exclusive_group()
+    reload_group.add_argument(
+        "--reload", dest="reload", action="store_true", default=None, help="Enable auto-reload"
+    )
+    reload_group.add_argument(
+        "--no-reload", dest="reload", action="store_false", help="Disable auto-reload"
+    )
+    p_run.set_defaults(func=cmd_run, reload=None)
+
+    p_users = sub.add_parser("users", help="List users in the database")
+    p_users.set_defaults(func=cmd_users)
+
+    p_report = sub.add_parser(
+        "report",
+        help="Export docs/report.md to PDF; merges judge.md and exports Guide transcripts",
+    )
+    p_report.add_argument("--name", required=True, help="Student name (printed on the PDF cover)")
+    p_report.add_argument("--id", dest="student_id", required=True, help="Student ID (PDF only)")
+    p_report.add_argument("--src", default=None, help="Markdown path (default: docs/report.md)")
+    p_report.add_argument("--output", default=None, help="PDF path (default: docs/report.pdf)")
+    p_report.set_defaults(func=cmd_report)
+
+    p_transcripts = sub.add_parser(
+        "transcripts",
+        help="Dump all native Guide project chats to docs/transcripts/ (+ zip) for submission",
+    )
+    p_transcripts.add_argument(
+        "--no-zip",
+        action="store_true",
+        help="Skip writing docs/transcripts.zip",
+    )
+    p_transcripts.set_defaults(func=cmd_transcripts)
+
+    p_usecase = sub.add_parser(
+        "usecase",
+        help="Render docs/diagrams/use-case.json to a UML use-case PNG",
+    )
+    p_usecase.add_argument("--spec", default=None, help="JSON spec (default: docs/diagrams/use-case.json)")
+    p_usecase.add_argument("--output", default=None, help="PNG path (default: docs/diagrams/use-case.png)")
+    p_usecase.set_defaults(func=cmd_usecase)
+
+    p_skills_verify = sub.add_parser(
+        "skills-verify",
+        help="Check course skills against .agents/skills.lock.json",
+    )
+    p_skills_verify.set_defaults(func=cmd_skills_verify)
+
+    p_skills_lock = sub.add_parser(
+        "skills-lock",
+        help="Rewrite .agents/skills.lock.json (course authors; needs FASTSTARTER_SKILLS_LOCK=1)",
+    )
+    p_skills_lock.set_defaults(func=cmd_skills_lock)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.func(args)
 
 
 if __name__ == "__main__":
-    cli()
+    main(sys.argv[1:])

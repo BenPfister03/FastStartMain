@@ -1,30 +1,9 @@
 {% extends "authenticated-base.html" %}
-
-{% block external_js %}
-<script src="{{ url_for('static', path='js/app.js')}}"></script>
-{% endblock %}
-
+{% block title %}Home{% endblock %}
 
 {% block subpage_content %}
-
-    <div class="container" id="content">
-        <div class="row">
-            <p>
-                This is table is rendered on the Client. JavaScript code requests the data from <a href="/api/users">/api/users</a> and writes it to this page.
-            </p>
-        </div>
-        <div class="row">
-            <table class="table table-striped">
-                <thead>
-                  <tr>
-                    <th>Id</th><th>Username</th>
-                  </tr>
-                </thead>
-                <tbody id="result">
-                
-                <tbody>
-            </table>
-        </div>
-    </div>
-
+<div class="container-fluid py-2">
+  <h1 class="h4 mb-2">Home</h1>
+  <p class="text-muted mb-0">Workflow screens replace this shell in Phase 5 implement.</p>
+</div>
 {% endblock %}
